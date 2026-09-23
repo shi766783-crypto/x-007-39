@@ -3,11 +3,12 @@ import { ref, computed } from 'vue'
 import { useDietRecordStore } from '@/stores/dietRecord'
 import { useMealPlanStore } from '@/stores/mealPlan'
 import { DISH_CATEGORIES, MEALS, MEAL_ICONS, WEEK_DAYS } from '@/constants'
-import { toDateKey, weekDateKeys, parseDateKey } from '@/utils/date'
+import { toDateKey, weekDateKeys, parseDateKey, formatDate } from '@/utils/date'
 import { nutritionScore, scoreLabel } from '@/utils/nutrition'
 import BaseButton from '@/components/common/BaseButton.vue'
 import BaseTag from '@/components/common/BaseTag.vue'
 import BaseEmpty from '@/components/common/BaseEmpty.vue'
+import BaseModal from '@/components/common/BaseModal.vue'
 import SimpleChart from '@/components/common/SimpleChart.vue'
 
 const diet = useDietRecordStore()
@@ -36,8 +37,27 @@ const planDishesForToday = computed(() => {
     .filter(Boolean)
 })
 
+// 最近常吃候选：当前餐次优先，不足 8 道时用其他餐次补齐，并排除当日该餐次已记录的菜
+const recentCandidates = computed(() => {
+  const recordedNames = new Set(diet.mealDishes(date.value, meal.value).map((d) => d.name))
+  const sameMeal = diet.recentDishes(meal.value, 8, date.value).filter((d) => !recordedNames.has(d.name))
+  if (sameMeal.length >= 8) return sameMeal.slice(0, 8)
+  const seen = new Set(sameMeal.map((d) => d.name))
+  const others = diet
+    .recentDishes('', 8, date.value)
+    .filter((d) => !recordedNames.has(d.name) && !seen.has(d.name))
+    .slice(0, 8 - sameMeal.length)
+  return [...sameMeal, ...others]
+})
+
+const quickImportAvailable = computed(() => planDishesForToday.value.length > 0 || recentCandidates.value.length > 0)
+
 const trendLabels = computed(() => weekDates.map((d) => `${parseDateKey(d).getMonth() + 1}/${parseDateKey(d).getDate()}`))
 const trendData = computed(() => weekDates.map((d) => diet.dailyScores[d] || 0))
+
+// 最近常吃选择弹窗
+const showRecentPicker = ref(false)
+const pickedKeys = ref([])
 
 function addDish() {
   dishes.value.push({ name: '', category: '蔬菜' })
@@ -47,9 +67,36 @@ function removeDish(i) {
   else dishes.value.splice(i, 1)
 }
 
+function candidateKey(d) {
+  return `${d.name}|${d.category}`
+}
+
 function importFromPlan() {
   dishes.value = planDishesForToday.value.map((d) => ({ name: d.name, category: d.category }))
   if (!dishes.value.length) dishes.value = [{ name: '', category: '蔬菜' }]
+}
+
+// 无计划菜时一键带出最近常吃：默认勾选前 4 道
+function openRecentPicker() {
+  if (planDishesForToday.value.length) {
+    importFromPlan()
+    return
+  }
+  pickedKeys.value = recentCandidates.value.slice(0, 4).map(candidateKey)
+  showRecentPicker.value = true
+}
+
+function togglePicked(d) {
+  const key = candidateKey(d)
+  const idx = pickedKeys.value.indexOf(key)
+  if (idx === -1) pickedKeys.value.push(key)
+  else pickedKeys.value.splice(idx, 1)
+}
+
+function applyRecentDishes() {
+  const picked = recentCandidates.value.filter((d) => pickedKeys.value.includes(candidateKey(d)))
+  if (picked.length) dishes.value = picked.map((d) => ({ name: d.name, category: d.category }))
+  showRecentPicker.value = false
 }
 
 function save() {
@@ -84,8 +131,8 @@ function removeRecord(id) {
           </select>
         </div>
         <div class="field actions-col">
-          <BaseButton variant="ghost" size="sm" :disabled="!planDishesForToday.length" @click="importFromPlan">
-            从计划导入
+          <BaseButton variant="ghost" size="sm" :disabled="!quickImportAvailable" @click="openRecentPicker">
+            {{ planDishesForToday.length ? '从计划导入' : '最近常吃' }}
           </BaseButton>
         </div>
       </div>
@@ -128,6 +175,35 @@ function removeRecord(id) {
       <div class="section-title">本周营养评分趋势</div>
       <SimpleChart type="line" :labels="trendLabels" :data="trendData" color="#2196f3" :height="180" />
     </div>
+
+    <!-- 无计划菜时，从最近常吃中挑选带入 -->
+    <BaseModal :show="showRecentPicker" :title="`选择最近常吃的菜 · ${meal}`" @close="showRecentPicker = false">
+      <BaseEmpty v-if="!recentCandidates.length" emoji="🍽️" text="还没有历史记录，先手动记录一餐吧" />
+      <template v-else>
+        <p class="picker-hint">默认已勾选最近常吃的几道菜，可点选增减</p>
+        <div class="recent-grid">
+          <button
+            v-for="d in recentCandidates"
+            :key="candidateKey(d)"
+            type="button"
+            class="recent-chip"
+            :class="{ active: pickedKeys.includes(candidateKey(d)) }"
+            @click="togglePicked(d)"
+          >
+            <span class="check">{{ pickedKeys.includes(candidateKey(d)) ? '✓' : '' }}</span>
+            <span class="chip-name">{{ d.name }}</span>
+            <BaseTag :category="d.category" :text="d.category" />
+            <span class="chip-meta">吃过 {{ d.count }} 次 · {{ formatDate(d.lastDate) }}</span>
+          </button>
+        </div>
+      </template>
+      <template #footer>
+        <BaseButton variant="ghost" size="sm" @click="showRecentPicker = false">取消</BaseButton>
+        <BaseButton size="sm" :disabled="!pickedKeys.length" @click="applyRecentDishes">
+          带入（{{ pickedKeys.length }}）
+        </BaseButton>
+      </template>
+    </BaseModal>
   </div>
 </template>
 
@@ -221,5 +297,57 @@ function removeRecord(id) {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.picker-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.recent-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.recent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.15s;
+}
+.recent-chip:hover {
+  border-color: var(--primary);
+}
+.recent-chip.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.recent-chip .check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.recent-chip.active .check {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+.chip-name {
+  font-weight: 600;
+}
+.chip-meta {
+  font-size: 11px;
+  color: var(--text-2);
 }
 </style>

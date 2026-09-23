@@ -83,6 +83,30 @@ export const useDietRecordStore = defineStore('dietRecord', {
       }
       return arr
     },
+
+    // 最近记录过的菜品（按名称+类别去重，出现次数多的优先，同为常吃时最近记录的优先）
+    // meal 传入时只统计该餐次；beforeDate 传入时只取该日期之前的记录
+    recentDishes: (state) => (meal = '', limit = 8, beforeDate = '') => {
+      const map = new Map()
+      state.records.forEach((r) => {
+        if (meal && r.meal !== meal) return
+        if (beforeDate && r.date >= beforeDate) return
+        r.dishes.forEach((d) => {
+          if (!d.name) return
+          const key = `${d.name}|${d.category || '其他'}`
+          const item = map.get(key)
+          if (item) {
+            item.count += 1
+            if (r.date > item.lastDate) item.lastDate = r.date
+          } else {
+            map.set(key, { name: d.name, category: d.category || '其他', count: 1, lastDate: r.date })
+          }
+        })
+      })
+      return [...map.values()]
+        .sort((a, b) => b.count - a.count || b.lastDate.localeCompare(a.lastDate))
+        .slice(0, limit)
+    },
   },
 
   actions: {
