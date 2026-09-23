@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useDietRecordStore } from '@/stores/dietRecord'
 import { useMealPlanStore } from '@/stores/mealPlan'
 import { DISH_CATEGORIES, MEALS, MEAL_ICONS, WEEK_DAYS } from '@/constants'
@@ -36,6 +36,16 @@ const planDishesForToday = computed(() => {
     .filter(Boolean)
 })
 
+// 当天该餐次没有计划菜时，提供最近常吃的菜品供快速复用
+const recentDishes = computed(() => (planDishesForToday.value.length ? [] : diet.recentDishes(8)))
+const showRecent = ref(false)
+const addedNames = computed(() => new Set(dishes.value.map((d) => d.name.trim()).filter(Boolean)))
+
+// 切换日期/餐次后收起常吃面板，避免与当前选择错位
+watch([date, meal], () => {
+  showRecent.value = false
+})
+
 const trendLabels = computed(() => weekDates.map((d) => `${parseDateKey(d).getMonth() + 1}/${parseDateKey(d).getDate()}`))
 const trendData = computed(() => weekDates.map((d) => diet.dailyScores[d] || 0))
 
@@ -50,6 +60,18 @@ function removeDish(i) {
 function importFromPlan() {
   dishes.value = planDishesForToday.value.map((d) => ({ name: d.name, category: d.category }))
   if (!dishes.value.length) dishes.value = [{ name: '', category: '蔬菜' }]
+}
+
+// 把最近常吃的菜加入编辑区：优先填充空行，已在编辑区的不重复添加
+function addRecentDish(d) {
+  if (addedNames.value.has(d.name)) return
+  const empty = dishes.value.find((x) => !x.name.trim())
+  if (empty) {
+    empty.name = d.name
+    empty.category = d.category
+  } else {
+    dishes.value.push({ name: d.name, category: d.category })
+  }
 }
 
 function save() {
@@ -84,10 +106,33 @@ function removeRecord(id) {
           </select>
         </div>
         <div class="field actions-col">
-          <BaseButton variant="ghost" size="sm" :disabled="!planDishesForToday.length" @click="importFromPlan">
+          <BaseButton v-if="planDishesForToday.length" variant="ghost" size="sm" @click="importFromPlan">
             从计划导入
           </BaseButton>
+          <BaseButton
+            v-else-if="recentDishes.length"
+            variant="ghost"
+            size="sm"
+            @click="showRecent = !showRecent"
+          >
+            🕘 最近常吃
+          </BaseButton>
+          <BaseButton v-else variant="ghost" size="sm" disabled>从计划导入</BaseButton>
         </div>
+      </div>
+
+      <div v-if="showRecent && recentDishes.length" class="recent-panel">
+        <span class="recent-label">最近常吃（点击加入）：</span>
+        <button
+          v-for="d in recentDishes"
+          :key="d.name"
+          class="recent-chip"
+          :class="{ added: addedNames.has(d.name) }"
+          :disabled="addedNames.has(d.name)"
+          @click="addRecentDish(d)"
+        >
+          <BaseTag :category="d.category" :text="`${d.name} ×${d.count}`" />
+        </button>
       </div>
 
       <div class="dish-editor">
@@ -160,6 +205,34 @@ function removeRecord(id) {
 }
 .actions-col {
   padding-bottom: 2px;
+}
+.recent-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+.recent-label {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.recent-chip {
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+.recent-chip:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+.recent-chip.added {
+  opacity: 0.4;
+  cursor: default;
 }
 .dish-editor {
   border-top: 1px solid var(--border);

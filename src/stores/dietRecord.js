@@ -83,6 +83,29 @@ export const useDietRecordStore = defineStore('dietRecord', {
       }
       return arr
     },
+
+    // 最近常吃的菜品（按记录次数排序，次数相同按最近一次记录时间）
+    recentDishes: (state) => (n = 8) => {
+      const stats = new Map()
+      // records 按记录时间先后追加，数组下标即可代表记录新旧
+      state.records.forEach((r, order) => {
+        r.dishes.forEach((d) => {
+          const name = (d.name || '').trim()
+          if (!name) return
+          const s = stats.get(name)
+          if (s) {
+            s.count += 1
+            s.lastOrder = order
+          } else {
+            stats.set(name, { name, category: d.category || '其他', count: 1, lastOrder: order })
+          }
+        })
+      })
+      return [...stats.values()]
+        .sort((a, b) => b.count - a.count || b.lastOrder - a.lastOrder)
+        .slice(0, n)
+        .map(({ name, category, count }) => ({ name, category, count }))
+    },
   },
 
   actions: {
